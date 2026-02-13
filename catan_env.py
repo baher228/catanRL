@@ -43,7 +43,8 @@ class BoardState:
         self.player_settlements = {}  # {player_id: set of vertex IDs}
     
     def _build_graph(self):
-        vertex_rows = [7, 9, 11, 11, 9, 7]
+        # Precise vertex counts for 54 nodes in a standard Catan hex grid
+        vertex_rows = [3, 4, 4, 5, 5, 6, 6, 5, 5, 4, 4, 3]
         
         vertex_id = 0
         for row_idx, num_vertices in enumerate(vertex_rows):
@@ -65,10 +66,10 @@ class BoardState:
                 if vid in self.graph:
                     self.graph.nodes[vid]['adjacent_tiles'].append(tile_id)
             
-            # Create edges around tile perimeter
-            for i in range(len(vertex_ids)):
+            # Create edges around tile perimeter (6 edges per tile)
+            for i in range(6):
                 v_a = vertex_ids[i]
-                v_b = vertex_ids[(i + 1) % len(vertex_ids)]
+                v_b = vertex_ids[(i + 1) % 6]
                 
                 edge_tuple = tuple(sorted([v_a, v_b]))
                 if edge_tuple not in edges_set:
@@ -77,26 +78,28 @@ class BoardState:
     
     def _compute_tile_vertex_mapping(self) -> dict[int, list[int]]:
         mapping = {
-            0: [0, 1, 8, 9, 7, 2],
-            1: [2, 3, 10, 11, 9, 8],
-            2: [3, 4, 12, 13, 11, 10],
-            3: [7, 9, 17, 18, 16, 5],
-            4: [9, 11, 19, 20, 18, 17],
-            5: [11, 13, 21, 22, 20, 19],
-            6: [13, 14, 23, 24, 22, 21],
-            7: [16, 18, 27, 28, 26, 25],
-            8: [18, 20, 29, 30, 28, 27],
-            9: [20, 22, 31, 32, 30, 29],
-            10: [22, 24, 33, 34, 32, 31],
-            11: [24, 15, 35, 36, 34, 33],
-            12: [26, 28, 38, 39, 37, 6],
-            13: [28, 30, 40, 41, 39, 38],
-            14: [30, 32, 42, 43, 41, 40],
-            15: [32, 34, 44, 45, 43, 42],
-            16: [37, 39, 47, 48, 46, 25],
-            17: [39, 41, 49, 50, 48, 47],
-            18: [41, 43, 51, 52, 50, 49],
+            0: [0, 4, 8, 12, 7, 3],
+            1: [1, 5, 9, 13, 8, 4],
+            2: [2, 6, 10, 14, 9, 5],
+            3: [7, 12, 17, 22, 16, 11],
+            4: [8, 13, 18, 23, 17, 12],
+            5: [9, 14, 19, 24, 18, 13],
+            6: [10, 15, 20, 25, 19, 14],
+            7: [16, 22, 28, 33, 27, 21],
+            8: [17, 23, 29, 34, 28, 22],
+            9: [18, 24, 30, 35, 29, 23],
+            10: [19, 25, 31, 36, 30, 24],
+            11: [20, 26, 32, 37, 31, 25],
+            12: [28, 34, 39, 43, 38, 33],
+            13: [29, 35, 40, 44, 39, 34],
+            14: [30, 36, 41, 45, 40, 35],
+            15: [31, 37, 42, 46, 41, 36],
+            16: [39, 44, 48, 51, 47, 43],
+            17: [40, 45, 49, 52, 48, 44],
+            18: [41, 46, 50, 53, 49, 45],
         }
+        
+        return mapping
         
         return mapping
     
@@ -113,7 +116,8 @@ class BoardState:
     def get_vertices_for_tile(self, tile_id: int) -> list[int]:
         return self.tile_to_vertices.get(tile_id, [])
     
-    def place_settlement(self, player_id: int, vertex_id: int) -> bool:
+    def can_place_settlement(self, player_id: int, vertex_id: int) -> bool:
+        """Check if a settlement can be placed without modifying state."""
         if vertex_id not in self.graph:
             return False
         
@@ -123,6 +127,12 @@ class BoardState:
         for neighbor_id in self.graph.neighbors(vertex_id):
             if self.graph.nodes[neighbor_id]['owner'] is not None:
                 return False
+        
+        return True
+    
+    def place_settlement(self, player_id: int, vertex_id: int) -> bool:
+        if not self.can_place_settlement(player_id, vertex_id):
+            return False
         
         self.graph.nodes[vertex_id]['owner'] = player_id
         self.graph.nodes[vertex_id]['is_city'] = False
@@ -134,7 +144,8 @@ class BoardState:
         
         return True
     
-    def upgrade_to_city(self, player_id: int, vertex_id: int) -> bool:
+    def can_upgrade_to_city(self, player_id: int, vertex_id: int) -> bool:
+        """Check if a settlement can be upgraded to a city without modifying state."""
         if vertex_id not in self.graph:
             return False
         
@@ -145,10 +156,17 @@ class BoardState:
         if node['is_city']:
             return False
         
+        return True
+    
+    def upgrade_to_city(self, player_id: int, vertex_id: int) -> bool:
+        if not self.can_upgrade_to_city(player_id, vertex_id):
+            return False
+        
         self.graph.nodes[vertex_id]['is_city'] = True
         return True
     
-    def place_road(self, player_id: int, edge_id: int = None, edge: tuple[int, int] = None) -> bool:
+    def can_place_road(self, player_id: int, edge_id: int = None, edge: tuple[int, int] = None) -> bool:
+        """Check if a road can be placed without modifying state."""
         if edge_id is not None and edge is None:
             if edge_id >= len(self._edge_list_cache):
                 return False
@@ -193,8 +211,16 @@ class BoardState:
                         connected = True
                         break
         
-        if not connected:
+        return connected
+    
+    def place_road(self, player_id: int, edge_id: int = None, edge: tuple[int, int] = None) -> bool:
+        if not self.can_place_road(player_id, edge_id, edge):
             return False
+        
+        if edge_id is not None and edge is None:
+            edge = self._edge_list_cache[edge_id]
+        
+        edge = tuple(sorted(edge))
         
         # Place road and track it
         self.graph.edges[edge]['owner'] = player_id
