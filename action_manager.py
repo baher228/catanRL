@@ -280,8 +280,7 @@ class ActionManager:
             if self.game.phase == GamePhase.SETUP or player.pay_cost(SETTLEMENT_COST):
                 if self.game.board.place_settlement(player_id, action.vertex_id):
                     player.settlements_remaining -= 1
-                    if self.game.phase != GamePhase.SETUP:
-                        player.public_victory_points += VP_PER_SETTLEMENT
+                    player.public_victory_points += VP_PER_SETTLEMENT
                     
                     # Track setup placements
                     if self.game.phase == GamePhase.SETUP:
