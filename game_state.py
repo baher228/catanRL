@@ -4,6 +4,7 @@ Manages players, resources, turn progression, and game phases.
 """
 
 import random
+import numpy as np
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set
 from enum import Enum, auto
@@ -330,3 +331,89 @@ class GameState:
             'pending_discards': player_id in self.pending_discards,
             'pending_robber_move': self.pending_robber_move,
         }
+    
+    def get_observation_vector(self, player_id: int) -> np.ndarray:
+        """
+        Returns a fixed-size flat numpy array for neural network input.
+        
+        Observation structure (total: 404 dimensions):
+        - Player resources (5 values) - normalized by /10
+        - Player dev cards (5 types) - normalized by /5
+        - Player stats (7 values) - settlements, cities, roads, knights, VPs, achievements
+        - Opponent stats (3 opponents × 7 features each = 21)
+        - Board vertices (54 × 3 = 162) - [owner_id, is_city, is_empty]
+        - Board edges (72 × 2 = 144) - [owner_id, is_empty]
+        - Board tiles (19 × 3 = 57) - [resource_type, token_number, has_robber]
+        - Game state (3 values) - current_player, turn_number, dice_roll
+        """
+        obs = []
+        player = self.players[player_id]
+        
+        # Player resources (5)
+        for resource in Resource:
+            obs.append(player.resources.get(resource, 0) / 10.0)
+        
+        # Player dev cards (5)
+        for card in DevelopmentCard:
+            obs.append(player.dev_cards.get(card, 0) / 5.0)
+        
+        # Player stats (7)
+        obs.extend([
+            player.settlements_remaining / 5.0,
+            player.cities_remaining / 4.0,
+            player.roads_remaining / 15.0,
+            player.knights_played / 10.0,
+            player.public_victory_points / 10.0,
+            float(player.has_longest_road),
+            float(player.has_largest_army)
+        ])
+        
+        # Opponents (3 × 7 = 21)
+        for p in self.players:
+            if p.player_id != player_id:
+                obs.extend([
+                    p.total_resource_count() / 10.0,
+                    sum(p.dev_cards.values()) / 5.0,
+                    p.settlements_remaining / 5.0,
+                    p.cities_remaining / 4.0,
+                    p.roads_remaining / 15.0,
+                    p.knights_played / 10.0,
+                    p.public_victory_points / 10.0
+                ])
+        
+        # Board vertices (54 × 3 = 162)
+        for v_id in range(54):
+            v_data = self.board.get_vertex_data(v_id)
+            owner = v_data['owner']
+            obs.extend([
+                (owner + 1) / 4.0 if owner is not None else 0,  # normalize owner (0-4 range)
+                float(v_data['is_city']),
+                float(owner is None)  # is_empty
+            ])
+        
+        # Board edges (72 × 2 = 144)
+        for edge in self.board._edge_list_cache:
+            e_data = self.board.get_edge_data(edge)
+            owner = e_data['owner']
+            obs.extend([
+                (owner + 1) / 4.0 if owner is not None else 0,
+                float(owner is None)
+            ])
+        
+        # Board tiles (19 × 3 = 57)
+        resource_map = {'desert': 0, 'wood': 1, 'brick': 2, 'wheat': 3, 'sheep': 4, 'ore': 5}
+        for tile in self.board.tiles:
+            obs.extend([
+                resource_map[tile.resource] / 5.0,
+                (tile.token or 0) / 12.0,
+                float(self.robber_tile_id == tile.id)
+            ])
+        
+        # Game state (3)
+        obs.extend([
+            self.current_player_idx / 3.0,
+            self.turn_number / 100.0,
+            (self.dice_roll or 0) / 12.0
+        ])
+        
+        return np.array(obs, dtype=np.float32)

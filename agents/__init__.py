@@ -3,5 +3,6 @@
 from agents.base_agent import BaseAgent
 from agents.random_agent import RandomAgent
 from agents.human_agent import HumanAgent
+from agents.ppo_agent import PPOAgent
 
-__all__ = ['BaseAgent', 'RandomAgent', 'HumanAgent']
+__all__ = ['BaseAgent', 'RandomAgent', 'HumanAgent', 'PPOAgent']
