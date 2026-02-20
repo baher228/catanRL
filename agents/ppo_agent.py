@@ -53,7 +53,7 @@ class PPOAgent:
         lr: float = 3e-4,
         clip_eps: float = 0.2,
         value_coef: float = 0.5,
-        entropy_coef: float = 0.01,
+        entropy_coef: float = 0.05,
         epochs: int = 4,
         batch_size: int = 2048,
         max_grad_norm: float = 0.5,

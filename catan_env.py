@@ -397,6 +397,7 @@ class CatanEnv:
         player_id  = self.current_player
         action     = self._index_to_action(action_idx)
         vp_before  = [p.get_total_victory_points() for p in self.game.players]
+        res_before = [p.total_resource_count()      for p in self.game.players]
 
         # Execute; on failure fall back to END_TURN (only after dice roll)
         success = False
@@ -412,8 +413,21 @@ class CatanEnv:
         # Auto-resolve robber / discard (simplified: skip those mechanics)
         self._auto_resolve_pending()
 
-        vp_after = [p.get_total_victory_points() for p in self.game.players]
-        rewards   = [(vp_after[i] - vp_before[i]) * 0.1 for i in range(self.num_players)]
+        vp_after  = [p.get_total_victory_points() for p in self.game.players]
+        res_after = [p.total_resource_count()      for p in self.game.players]
+
+        rewards = [(vp_after[i] - vp_before[i]) * 0.5 for i in range(self.num_players)]
+
+        # Small shaping reward for collecting resources (encourages dice-rolling
+        # and staying alive in the resource economy)
+        for i in range(self.num_players):
+            gained = res_after[i] - res_before[i]
+            if gained > 0:
+                rewards[i] += gained * 0.02
+
+        # Small penalty for illegal / no-op actions (discourages lazy looping)
+        if not success:
+            rewards[player_id] -= 0.01
 
         winner = self.game.check_victory()
         done   = winner is not None or self.game.turn_number >= self.max_turns

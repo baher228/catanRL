@@ -1,24 +1,3 @@
-"""
-Multi-agent PPO training loop for Catan.
-
-Creates 4 independent PPO agents (same architecture, different random weights)
-and runs them against the real CatanEnv.
-
-Usage:
-    # Start fresh:
-    python train_ppo.py
-
-    # Resume from the latest checkpoint:
-    python train_ppo.py --resume
-
-Simplified rules (handled by CatanEnv):
-    - No dev-card actions
-    - No robber / discard (auto-resolved internally)
-    - Only 4:1 bank trades
-
-Action space : 202 discrete actions  (see CatanEnv docstring)
-Obs space    : 404-dimensional float32 vector  (see GameState.get_observation_vector)
-"""
 
 import argparse
 import os
@@ -45,17 +24,6 @@ def train(
     checkpoint_dir: str  = "checkpoints",
     resume:         bool = False,
 ) -> list:
-    """
-    Train NUM_PLAYERS independent PPO agents against each other.
-
-    Checkpoints
-    -----------
-    Every *save_interval* episodes the agents and training state are written to
-    *checkpoint_dir/*.  If *resume=True* the latest checkpoint is loaded
-    automatically so training continues where it left off.
-
-    Returns the list of trained PPOAgents.
-    """
 
     os.makedirs(checkpoint_dir, exist_ok=True)
     state_path  = os.path.join(checkpoint_dir, "training_state.pkl")
@@ -68,6 +36,13 @@ def train(
     start_ep        = 1
     episode_rewards = [[] for _ in range(NUM_PLAYERS)]
 
+    # ── per-episode tracking buffers ─────────────────────────────────
+    win_buf   = []             # winner id (-1 = timeout) per episode
+    turn_buf  = []             # turns per episode
+    vp_buf    = [[] for _ in range(NUM_PLAYERS)]  # final VPs per episode
+    loss_buf  = {"policy": [], "value": [], "entropy": []}  # avg across agents
+    # ─────────────────────────────────────────────────────────────────
+
     can_resume = resume and all(os.path.exists(p) for p in agent_paths)
     if can_resume:
         print(f"Resuming from checkpoint in '{checkpoint_dir}' …")
@@ -77,6 +52,11 @@ def train(
                 saved = pickle.load(f)
             start_ep        = saved["next_episode"]
             episode_rewards = saved["episode_rewards"]
+            win_buf         = saved.get("win_buf",  [])
+            turn_buf        = saved.get("turn_buf", [])
+            vp_buf          = saved.get("vp_buf",   [[] for _ in range(NUM_PLAYERS)])
+            loss_buf        = saved.get("loss_buf",
+                                        {"policy": [], "value": [], "entropy": []})
         print(f"  Continuing from episode {start_ep}")
     else:
         agents = [PPOAgent(OBS_DIM, ACT_DIM) for _ in range(NUM_PLAYERS)]
@@ -106,35 +86,80 @@ def train(
             obs = next_obs
 
         # ── 3.  End-of-episode: compute advantages & update ───────────
+        ep_losses = {"policy": [], "value": [], "entropy": []}
         for i in range(NUM_PLAYERS):
             agents[i].compute_returns_and_advantages(last_value=0.0, last_done=True)
-            agents[i].update()
+            L = agents[i].update()
+            ep_losses["policy"].append(L["policy_loss"])
+            ep_losses["value"].append(L["value_loss"])
+            ep_losses["entropy"].append(L["entropy"])
 
         for i in range(NUM_PLAYERS):
             episode_rewards[i].append(ep_reward[i])
 
+        winner = info.get("winner")
+        win_buf.append(winner if winner is not None else -1)
+        turn_buf.append(info.get("turn", 0))
+        for i in range(NUM_PLAYERS):
+            vp_buf[i].append(env.game.players[i].get_total_victory_points())
+        for k in loss_buf:
+            loss_buf[k].append(np.mean(ep_losses[k]))
+
         # ── 4.  Logging ───────────────────────────────────────────────
         if ep % log_interval == 0:
-            mean_rew = [
-                np.mean(episode_rewards[i][-log_interval:])
-                for i in range(NUM_PLAYERS)
-            ]
-            rew_str = "  ".join(f"P{i}: {r:+.3f}" for i, r in enumerate(mean_rew))
-            winner  = info.get("winner")
-            turn    = info.get("turn", "?")
-            print(
-                f"Episode {ep:>5d} | {rew_str} | turns={turn}"
-                + (f" | winner=P{winner}" if winner is not None else "")
-            )
+            w = win_buf[-log_interval:]
+            t = turn_buf[-log_interval:]
+            n = len(w)
+
+            # Win rate per player and timeout rate
+            win_rates  = [w.count(i) / n for i in range(NUM_PLAYERS)]
+            timeout_rt = w.count(-1) / n
+
+            # Mean reward over window
+            mean_rew = [np.mean(episode_rewards[i][-log_interval:])
+                        for i in range(NUM_PLAYERS)]
+
+            # Mean final VPs over window
+            mean_vp = [np.mean(vp_buf[i][-log_interval:])
+                       for i in range(NUM_PLAYERS)]
+
+            # Mean PPO metrics over window
+            mean_pi  = np.mean(loss_buf["policy"][-log_interval:])
+            mean_val = np.mean(loss_buf["value"][-log_interval:])
+            mean_ent = np.mean(loss_buf["entropy"][-log_interval:])
+            mean_turns = np.mean(t)
+
+            print(f"\n{'─'*70}")
+            print(f" Episode {ep:>5d}  (last {n} games)")
+            print(f"{'─'*70}")
+
+            # Per-player table
+            header = f"  {'':4s}  {'WinRate':>8s}  {'AvgReward':>10s}  {'AvgVP':>6s}"
+            print(header)
+            for i in range(NUM_PLAYERS):
+                marker = " ←" if win_rates[i] == max(win_rates) else ""
+                print(f"  P{i}    {win_rates[i]:>7.1%}  {mean_rew[i]:>+10.3f}  {mean_vp[i]:>6.2f}{marker}")
+
+            print(f"  timeout          {timeout_rt:>7.1%}")
+            print(f"  avg turns        {mean_turns:>7.1f}")
+
+            # PPO health
+            ent_warn = "  ⚠ low" if mean_ent < 1.0 else ""
+            print(f"  policy loss      {mean_pi:>+8.4f}")
+            print(f"  value  loss      {mean_val:>8.4f}")
+            print(f"  entropy          {mean_ent:>8.4f}{ent_warn}")
+            print(f"{'─'*70}")
 
         # ── 5.  Checkpoint ────────────────────────────────────────────
         if ep % save_interval == 0:
             _save_checkpoint(agents, episode_rewards, ep + 1,
+                             win_buf, turn_buf, vp_buf, loss_buf,
                              agent_paths, state_path)
             print(f"  [checkpoint saved at episode {ep}]")
 
     # Final save
     _save_checkpoint(agents, episode_rewards, start_ep + num_episodes,
+                     win_buf, turn_buf, vp_buf, loss_buf,
                      agent_paths, state_path)
     print("\nTraining complete.  Final checkpoint saved.")
     return agents
@@ -143,12 +168,20 @@ def train(
 # ── Checkpoint helpers ────────────────────────────────────────────────
 
 def _save_checkpoint(agents, episode_rewards, next_episode,
+                     win_buf, turn_buf, vp_buf, loss_buf,
                      agent_paths, state_path):
     for i, agent in enumerate(agents):
         agent.save_checkpoint(agent_paths[i])
     with open(state_path, "wb") as f:
         pickle.dump(
-            {"next_episode": next_episode, "episode_rewards": episode_rewards},
+            {
+                "next_episode":    next_episode,
+                "episode_rewards": episode_rewards,
+                "win_buf":         win_buf,
+                "turn_buf":        turn_buf,
+                "vp_buf":          vp_buf,
+                "loss_buf":        loss_buf,
+            },
             f,
         )
 
